@@ -39,7 +39,12 @@ const char* reg_name( unsigned char reg, unsigned char w )
     return w ? regTableX[ reg ] : regTableL[ reg ];
 }
 
-int mov_reg( unsigned char* instr )
+int value_cast( const unsigned char* reg, unsigned char w )
+{
+    return w ? *(const unsigned short*)reg : *reg;
+}
+
+int instr_reg_r_m( const char* instr_name, const unsigned char* instr )
 {
     unsigned char d = instr[0] & 0b00000010;
     unsigned char w = instr[0] & 0b00000001;
@@ -51,7 +56,7 @@ int mov_reg( unsigned char* instr )
     {
     case 0b11:
         {
-            printf( "mov %s, %s\n", reg_name( d ? reg : r_m, w ), reg_name( d ? r_m : reg, w ) );
+            printf( "%s %s, %s\n", instr_name, reg_name( d ? reg : r_m, w ), reg_name( d ? r_m : reg, w ) );
             return 2;
         }
 
@@ -60,17 +65,17 @@ int mov_reg( unsigned char* instr )
             if ( r_m == 0b110 )
             {
                 if ( d )
-                    printf( "mov %s, [%d]\n", reg_name( reg, w ), *(unsigned short*)(&instr[2]) );
+                    printf( "%s %s, [%d]\n", instr_name, reg_name( reg, w ), value_cast( &instr[2], 1 ) );
                 else
-                    printf( "mov [%d], %s\n", *(unsigned short*)(&instr[2]), reg_name( reg, w ) );
+                    printf( "%s [%d], %s\n", instr_name, value_cast( &instr[2], 1 ), reg_name( reg, w ) );
 
                 return 4;
             }
 
             if ( d )
-                printf( "mov %s, [%s]\n", reg_name( reg, w ), regMemTable[ r_m ] );
+                printf( "%s %s, [%s]\n", instr_name, reg_name( reg, w ), regMemTable[ r_m ] );
             else
-                printf( "mov [%s], %s\n", regMemTable[ r_m ], reg_name( reg, w ) );
+                printf( "%s [%s], %s\n", instr_name, regMemTable[ r_m ], reg_name( reg, w ) );
 
             return 2;
         }
@@ -78,9 +83,9 @@ int mov_reg( unsigned char* instr )
     case 0b01:
         {
             if ( d )
-                printf( "mov %s, [%s + %d]\n", reg_name( reg, w ), regMemTable[ r_m ], instr[2] );
+                printf( "%s %s, [%s + %d]\n", instr_name, reg_name( reg, w ), regMemTable[ r_m ], instr[2] );
             else
-                printf( "mov [%s + %d], %s\n", regMemTable[ r_m ], instr[2], reg_name( reg, w ) );
+                printf( "%s [%s + %d], %s\n", instr_name, regMemTable[ r_m ], instr[2], reg_name( reg, w ) );
 
             return 3;
         }
@@ -88,9 +93,9 @@ int mov_reg( unsigned char* instr )
     case 0b10:
         {
             if ( d )
-                printf( "mov %s, [%s + %d]\n", reg_name( reg, w ), regMemTable[ r_m ], *(unsigned short*)(&instr[2]) );
+                printf( "%s %s, [%s + %d]\n", instr_name, reg_name( reg, w ), regMemTable[ r_m ], value_cast( &instr[2], 1 ) );
             else
-                printf( "mov [%s + %d], %s\n", regMemTable[ r_m ], *(unsigned short*)(&instr[2]), reg_name( reg, w ) );
+                printf( "%s [%s + %d], %s\n", instr_name, regMemTable[ r_m ], value_cast( &instr[2], 1 ), reg_name( reg, w ) );
 
             return 4;
         }
@@ -103,40 +108,146 @@ int mov_reg( unsigned char* instr )
     return -1;
 }
 
-int mov_imm_to_reg( unsigned char* instr )
+int instr_imm_to_r_m( const char* instr_name, const unsigned char* instr, char s )
+{
+    unsigned char w = instr[0] & 0b00000001;
+    unsigned char mod = ( instr[1] & 0b11000000 ) >> 6;
+    unsigned char r_m = ( instr[1] & 0b00000111 );
+
+    char wide = w && !s;
+
+    switch ( mod )
+    {
+    case 0b11:
+        {
+            printf( "%s %s, %d\n", instr_name, reg_name( r_m, w ), value_cast( &instr[2], wide ) );
+            return wide ? 4 : 3;
+        }
+
+    case 0b00:
+        {
+            if ( r_m == 0b110 )
+            {
+                printf( "%s [%d], %d\n", instr_name, value_cast( &instr[2], 1 ), value_cast( &instr[4], wide ) );
+                return wide ? 6 : 5;
+            }
+
+            printf( "%s [%s], %d\n", instr_name, regMemTable[ r_m ], value_cast( &instr[2], wide ) );
+            return wide ? 4 : 3;
+        }
+
+    case 0b01:
+        {
+            printf( "%s [%s + %d], %d\n", instr_name, regMemTable[ r_m ], instr[2], value_cast( &instr[3], wide ) );
+            return wide ? 5 : 4;
+        }
+
+    case 0b10:
+        {
+            printf( "%s [%s + %d], %d\n", instr_name, regMemTable[ r_m ], value_cast( &instr[2], 1 ), value_cast( &instr[4], wide ) );
+            return wide ? 6 : 5;
+        }
+
+    default:
+        break;
+    }
+
+    printf( "ERROR: Incorrect mov instruction!\n" );
+    return -1;
+}
+
+int mov_imm_to_reg( const unsigned char* instr )
 {
     char reg = instr[0] & 0b00000111;
     char w = instr[0] & 0b00001000;
-    if ( w )
-    {
-        printf( "mov %s, %d\n", regTableX[ reg ], *(unsigned short*)(&instr[1]) );
-        return 3;
-    }
 
-    printf( "mov %s, %d\n", regTableL[ reg ], instr[1] );
-    return 2;
+    printf( "mov %s, %d\n", reg_name( reg, w ), value_cast( &instr[1], w ) );
+
+    return w ? 3 : 2;
+}
+
+int instr_imm_to_accum( const char* instr_name, const unsigned char* instr )
+{
+    char w = instr[0] & 0b00000001;
+    printf( "%s %s, %d\n", instr_name, w ? "AX" : "AL", value_cast( &instr[1], w ) );
+
+    return w ? 3 : 2;
 }
 
 void disassemble( unsigned char* instr_stream, int size )
 {
     while ( size )
     {
-        int instr_size;
-        if ( 0b100010 == (instr_stream[0] >> 2) )
+        int instr_size = 0;
+
+        switch ( instr_stream[0] >> 2 )
         {
-            instr_size = mov_reg( instr_stream );
+        case 0b100010:
+            instr_size = instr_reg_r_m( "mov", instr_stream );
+            break;
+        
+        case 0b000000:
+            instr_size = instr_reg_r_m( "add", instr_stream );
+            break;
+
+        case 0b001010:
+            instr_size = instr_reg_r_m( "sub", instr_stream );
+            break;
+
+        case 0b001110:
+            instr_size = instr_reg_r_m( "cmp", instr_stream );
+            break;
+
+        case 0b000001:
+            instr_size = instr_imm_to_accum( "add", instr_stream );
+            break;
+
+        case 0b001011:
+            instr_size = instr_imm_to_accum( "sub", instr_stream );
+            break;
+
+        case 0b001111:
+            instr_size = instr_imm_to_accum( "cmp", instr_stream );
+            break;
+
+        case 0b100000:
+            {
+                char s = instr_stream[0] & 0b00000010;
+                if ( 0 == ((instr_stream[1] >> 3) & 0b00111) )
+                {
+                    instr_size = instr_imm_to_r_m( "add", instr_stream, s );
+                }
+                else if ( 0b101 == ((instr_stream[1] >> 3) & 0b00111) )
+                {
+                    instr_size = instr_imm_to_r_m( "sub", instr_stream, s );
+                }
+                else if ( 0b111 == ((instr_stream[1] >> 3) & 0b00111) )
+                {
+                    instr_size = instr_imm_to_r_m( "cmp", instr_stream, s );
+                }
+
+                break;
+            }
+        
+        default:
+            break;
+        }
+
+        if ( 0b1100011 == (instr_stream[0] >> 1) )
+        {
+            instr_size = instr_imm_to_r_m( "mov", instr_stream, 0 );
         }
         else if ( 0b1011 == (instr_stream[0] >> 4) )
         {
             instr_size = mov_imm_to_reg( instr_stream );
         }
-        else
+
+        if ( instr_size == 0 )
         {
             printf( "ERROR: Unknown instruction!\n" );
             return;
         }
-
-        if ( instr_size < 0 )
+        else if ( instr_size < 0 )
         {
             return;
         }
