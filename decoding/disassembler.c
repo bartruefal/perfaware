@@ -1,5 +1,5 @@
+#include <stdlib.h>
 #include <stdio.h>
-#include <malloc.h>
 
 const char* regTableL[] = {
     "AL",
@@ -104,7 +104,7 @@ int instr_reg_r_m( const char* instr_name, const unsigned char* instr )
         break;
     }
 
-    printf( "ERROR: Incorrect mov instruction!\n" );
+    printf( "ERROR: Incorrect instruction!\n" );
     return -1;
 }
 
@@ -152,7 +152,7 @@ int instr_imm_to_r_m( const char* instr_name, const unsigned char* instr, char s
         break;
     }
 
-    printf( "ERROR: Incorrect mov instruction!\n" );
+    printf( "ERROR: Incorrect instruction!\n" );
     return -1;
 }
 
@@ -174,81 +174,168 @@ int instr_imm_to_accum( const char* instr_name, const unsigned char* instr )
     return w ? 3 : 2;
 }
 
-void disassemble( unsigned char* instr_stream, int size )
+int decode_reg_mem( const unsigned char* instr_stream )
+{
+    switch ( instr_stream[0] >> 2 )
+    {
+    case 0b100010:
+        return instr_reg_r_m( "mov", instr_stream );
+
+    case 0b000000:
+        return instr_reg_r_m( "add", instr_stream );
+
+    case 0b001010:
+        return instr_reg_r_m( "sub", instr_stream );
+
+    case 0b001110:
+        return instr_reg_r_m( "cmp", instr_stream );
+
+    case 0b000001:
+        return instr_imm_to_accum( "add", instr_stream );
+
+    case 0b001011:
+        return instr_imm_to_accum( "sub", instr_stream );
+
+    case 0b001111:
+        return instr_imm_to_accum( "cmp", instr_stream );
+
+    case 0b100000:
+        {
+            char s = instr_stream[0] & 0b00000010;
+            if ( 0 == ((instr_stream[1] >> 3) & 0b00111) )
+            {
+                return instr_imm_to_r_m( "add", instr_stream, s );
+            }
+            else if ( 0b101 == ((instr_stream[1] >> 3) & 0b00111) )
+            {
+                return instr_imm_to_r_m( "sub", instr_stream, s );
+            }
+            else if ( 0b111 == ((instr_stream[1] >> 3) & 0b00111) )
+            {
+                return instr_imm_to_r_m( "cmp", instr_stream, s );
+            }
+        }
+
+    default:
+        break;
+    }
+
+    if ( 0b1100011 == (instr_stream[0] >> 1) )
+    {
+        return instr_imm_to_r_m( "mov", instr_stream, 0 );
+    }
+    else if ( 0b1011 == (instr_stream[0] >> 4) )
+    {
+        return mov_imm_to_reg( instr_stream );
+    }
+
+    return -1;
+}
+
+int decode_jmp( const unsigned char* instr_stream )
+{
+    switch ( instr_stream[0] )
+    {
+    case 0b01110100:
+        printf( "je %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111100:
+        printf( "jl %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111110:
+        printf( "jle %d\n", instr_stream[1] );
+        break;
+
+    case 0b01110010:
+        printf( "jb %d\n", instr_stream[1] );
+        break;
+
+    case 0b01110110:
+        printf( "jbe %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111010:
+        printf( "jp %d\n", instr_stream[1] );
+        break;
+
+    case 0b01110000:
+        printf( "jo %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111000:
+        printf( "js %d\n", instr_stream[1] );
+        break;
+
+    case 0b01110101:
+        printf( "jne %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111101:
+        printf( "jnl %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111111:
+        printf( "jnle %d\n", instr_stream[1] );
+        break;
+
+    case 0b01110011:
+        printf( "jnb %d\n", instr_stream[1] );
+        break;
+
+    case 0b01110111:
+        printf( "jnbe %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111011:
+        printf( "jnp %d\n", instr_stream[1] );
+        break;
+
+    case 0b01110001:
+        printf( "jno %d\n", instr_stream[1] );
+        break;
+
+    case 0b01111001:
+        printf( "jns %d\n", instr_stream[1] );
+        break;
+
+    case 0b11100010:
+        printf( "loop %d\n", instr_stream[1] );
+        break;
+
+    case 0b11100001:
+        printf( "loopz %d\n", instr_stream[1] );
+        break;
+
+    case 0b11100000:
+        printf( "loopnz %d\n", instr_stream[1] );
+        break;
+
+    case 0b11100011:
+        printf( "jcxz %d\n", instr_stream[1] );
+        break;
+
+    default:
+        return 0;
+    }
+
+    return 2;
+}
+
+void disassemble( const unsigned char* instr_stream, int size )
 {
     while ( size )
     {
-        int instr_size = 0;
-
-        switch ( instr_stream[0] >> 2 )
+        int instr_size = decode_reg_mem( instr_stream );
+        if ( instr_size == -1 )
         {
-        case 0b100010:
-            instr_size = instr_reg_r_m( "mov", instr_stream );
-            break;
-        
-        case 0b000000:
-            instr_size = instr_reg_r_m( "add", instr_stream );
-            break;
-
-        case 0b001010:
-            instr_size = instr_reg_r_m( "sub", instr_stream );
-            break;
-
-        case 0b001110:
-            instr_size = instr_reg_r_m( "cmp", instr_stream );
-            break;
-
-        case 0b000001:
-            instr_size = instr_imm_to_accum( "add", instr_stream );
-            break;
-
-        case 0b001011:
-            instr_size = instr_imm_to_accum( "sub", instr_stream );
-            break;
-
-        case 0b001111:
-            instr_size = instr_imm_to_accum( "cmp", instr_stream );
-            break;
-
-        case 0b100000:
-            {
-                char s = instr_stream[0] & 0b00000010;
-                if ( 0 == ((instr_stream[1] >> 3) & 0b00111) )
-                {
-                    instr_size = instr_imm_to_r_m( "add", instr_stream, s );
-                }
-                else if ( 0b101 == ((instr_stream[1] >> 3) & 0b00111) )
-                {
-                    instr_size = instr_imm_to_r_m( "sub", instr_stream, s );
-                }
-                else if ( 0b111 == ((instr_stream[1] >> 3) & 0b00111) )
-                {
-                    instr_size = instr_imm_to_r_m( "cmp", instr_stream, s );
-                }
-
-                break;
-            }
-        
-        default:
-            break;
+            instr_size = decode_jmp( instr_stream );
         }
 
-        if ( 0b1100011 == (instr_stream[0] >> 1) )
-        {
-            instr_size = instr_imm_to_r_m( "mov", instr_stream, 0 );
-        }
-        else if ( 0b1011 == (instr_stream[0] >> 4) )
-        {
-            instr_size = mov_imm_to_reg( instr_stream );
-        }
-
-        if ( instr_size == 0 )
+        if ( instr_size < 0 )
         {
             printf( "ERROR: Unknown instruction!\n" );
-            return;
-        }
-        else if ( instr_size < 0 )
-        {
             return;
         }
 
