@@ -1,5 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+
+#define bool unsigned char
 
 const char* regTableL[] = {
     "AL",
@@ -34,6 +37,8 @@ const char* regMemTable[] = {
     "BX"
 };
 
+unsigned short register_file[ sizeof(regTableX) / sizeof(regTableX[0]) ];
+
 const char* reg_name( unsigned char reg, unsigned char w )
 {
     return w ? regTableX[ reg ] : regTableL[ reg ];
@@ -44,7 +49,7 @@ int value_cast( const unsigned char* reg, unsigned char w )
     return w ? *(const unsigned short*)reg : *reg;
 }
 
-int instr_reg_r_m( const char* instr_name, const unsigned char* instr )
+int instr_reg_r_m( const char* instr_name, const unsigned char* instr, bool execute )
 {
     unsigned char d = instr[0] & 0b00000010;
     unsigned char w = instr[0] & 0b00000001;
@@ -57,6 +62,12 @@ int instr_reg_r_m( const char* instr_name, const unsigned char* instr )
     case 0b11:
         {
             printf( "%s %s, %s\n", instr_name, reg_name( d ? reg : r_m, w ), reg_name( d ? r_m : reg, w ) );
+
+            if ( execute && w )
+            {
+                register_file[ d ? reg : r_m ] = register_file[ d ? r_m : reg ];
+            }
+
             return 2;
         }
 
@@ -156,12 +167,17 @@ int instr_imm_to_r_m( const char* instr_name, const unsigned char* instr, char s
     return -1;
 }
 
-int mov_imm_to_reg( const unsigned char* instr )
+int mov_imm_to_reg( const unsigned char* instr, bool execute )
 {
     char reg = instr[0] & 0b00000111;
     char w = instr[0] & 0b00001000;
 
     printf( "mov %s, %d\n", reg_name( reg, w ), value_cast( &instr[1], w ) );
+
+    if ( execute && w )
+    {
+        register_file[reg] = *(unsigned short*)(&instr[1]);
+    }
 
     return w ? 3 : 2;
 }
@@ -174,21 +190,21 @@ int instr_imm_to_accum( const char* instr_name, const unsigned char* instr )
     return w ? 3 : 2;
 }
 
-int decode_reg_mem( const unsigned char* instr_stream )
+int decode_reg_mem( const unsigned char* instr_stream, bool execute )
 {
     switch ( instr_stream[0] >> 2 )
     {
     case 0b100010:
-        return instr_reg_r_m( "mov", instr_stream );
+        return instr_reg_r_m( "mov", instr_stream, execute );
 
     case 0b000000:
-        return instr_reg_r_m( "add", instr_stream );
+        return instr_reg_r_m( "add", instr_stream, 0 );
 
     case 0b001010:
-        return instr_reg_r_m( "sub", instr_stream );
+        return instr_reg_r_m( "sub", instr_stream, 0 );
 
     case 0b001110:
-        return instr_reg_r_m( "cmp", instr_stream );
+        return instr_reg_r_m( "cmp", instr_stream, 0 );
 
     case 0b000001:
         return instr_imm_to_accum( "add", instr_stream );
@@ -226,7 +242,7 @@ int decode_reg_mem( const unsigned char* instr_stream )
     }
     else if ( 0b1011 == (instr_stream[0] >> 4) )
     {
-        return mov_imm_to_reg( instr_stream );
+        return mov_imm_to_reg( instr_stream, execute );
     }
 
     return -1;
@@ -323,11 +339,11 @@ int decode_jmp( const unsigned char* instr_stream )
     return 2;
 }
 
-void disassemble( const unsigned char* instr_stream, int size )
+void disassemble( const unsigned char* instr_stream, int size, bool execute )
 {
     while ( size )
     {
-        int instr_size = decode_reg_mem( instr_stream );
+        int instr_size = decode_reg_mem( instr_stream, execute );
         if ( instr_size == -1 )
         {
             instr_size = decode_jmp( instr_stream );
@@ -346,12 +362,25 @@ void disassemble( const unsigned char* instr_stream, int size )
 
 int main( int argc, char** argv )
 {
-    if ( argc != 2 )
+    if ( argc < 2 )
     {
         return -1;
     }
 
-    FILE* input_file = fopen( argv[1], "rb" );
+    bool execute = (bool)(strncmp(argv[1], "-exec", 5) == 0);
+    if ( execute && argc != 3 )
+    {
+        return -1;
+    }
+
+    for ( int i = 0; i < sizeof(register_file) / sizeof(register_file[0]); i++ )
+    {
+        register_file[i] = 0;
+    }
+
+    const char* file_name = execute ? argv[2] : argv[1];
+
+    FILE* input_file = fopen( file_name, "rb" );
     fseek( input_file, 0L, SEEK_END );
     int file_size = ftell(input_file);
     fseek( input_file, 0L, SEEK_SET );
@@ -359,9 +388,14 @@ int main( int argc, char** argv )
     unsigned char* buf = malloc( file_size );
     fread( buf, file_size, 1, input_file );
 
-    disassemble( buf, file_size );
+    disassemble( buf, file_size, execute );
 
     free( buf );
+
+    for ( int i = 0; i < sizeof(register_file) / sizeof(register_file[0]); i++ )
+    {
+        printf( "%s: 0x%#04x\n", regTableX[i], register_file[i] );
+    }
 
     return fclose( input_file );
 }
