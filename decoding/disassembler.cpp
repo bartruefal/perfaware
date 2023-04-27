@@ -10,7 +10,7 @@ using int16 = int16_t;
 using uint8 = uint8_t;
 using int8 = int8_t;
 
-const char* regTableL[] = {
+const char* GRegTableL[] = {
     "AL",
     "CL",
     "DL",
@@ -21,7 +21,7 @@ const char* regTableL[] = {
     "BH"
 };
 
-const char* regTableX[] = {
+const char* GRegTableX[] = {
     "AX",
     "CX",
     "DX",
@@ -32,16 +32,19 @@ const char* regTableX[] = {
     "DI"
 };
 
-const char* regMemTable[] = {
-    "BX + SI",
-    "BX + DI",
-    "BP + SI",
-    "BP + DI",
-    "SI",
-    "DI",
-    "BP",
-    "BX"
+const char* GRegMemTable[] = {
+    "BX + SI", // 3 + 6
+    "BX + DI", // 3 + 7
+    "BP + SI", // 5 + 6
+    "BP + DI", // 5 + 7
+    "SI",      // 6
+    "DI",      // 7
+    "BP",      // 5
+    "BX"       // 3
 };
+
+uint8 GMemRegTable1[] = { 3, 3, 5, 5, 6, 7, 5, 3 };
+uint8 GMemRegTable2[] = { 6, 7, 6, 7, UINT8_MAX, UINT8_MAX, UINT8_MAX, UINT8_MAX };
 
 enum class IName : uint16
 {
@@ -103,11 +106,11 @@ const char* InstrNames[]
 struct Instruction
 {
     IName Name = IName::UNKNOWN;
-    uint16 RegSrc = UINT16_MAX;
-    uint16 MemRegSrc = UINT16_MAX;
+    uint8 RegSrc = UINT8_MAX;
+    uint8 MemRegSrc = UINT8_MAX;
     uint16 DisplSrc = UINT16_MAX;
-    uint16 RegDst = UINT16_MAX;
-    uint16 MemRegDst = UINT16_MAX;
+    uint8 RegDst = UINT8_MAX;
+    uint8 MemRegDst = UINT8_MAX;
     uint16 DisplDst = UINT16_MAX;
 
     union
@@ -123,35 +126,73 @@ struct Instruction
 
 struct RegisterFile
 {
-    uint16 GPRs[ sizeof(regTableX) / sizeof(regTableX[0]) ];
+    uint16 GPRs[ sizeof(GRegTableX) / sizeof(GRegTableX[0]) ];
     uint16 IP;
     bool ZF;
     bool SF;
 };
 
-const char* reg_name( uint8 reg, bool wide )
+struct Storage
 {
-    return wide ? regTableX[ reg ] : regTableL[ reg ];
+    RegisterFile RegFile;
+    uint8 Memory[ 1 << 16 ];
+};
+
+const char* GetRegisterName( uint8 RegID, bool IsWide )
+{
+    return IsWide ? GRegTableX[ RegID ] : GRegTableL[ RegID ];
 }
 
-void decode_reg_r_m( const uint8* instr_ptr, Instruction& instr )
+uint16 CalculateMemoryAddress( const Instruction& MovInstr, const RegisterFile& RegFile )
 {
-    uint8 d = instr_ptr[0] & 0b00000010;
-    uint8 w = instr_ptr[0] & 0b00000001;
-    uint8 mod = ( instr_ptr[1] & 0b11000000 ) >> 6;
-    uint8 reg = ( instr_ptr[1] & 0b00111000 ) >> 3;
-    uint8 r_m = ( instr_ptr[1] & 0b00000111 );
+    uint16 Address = UINT16_MAX;
+    if ( MovInstr.MemRegDst != UINT8_MAX || MovInstr.MemRegSrc != UINT8_MAX )
+    {
+        uint8 MemReg = MovInstr.MemRegDst != UINT8_MAX ? MovInstr.MemRegDst : MovInstr.MemRegSrc;
+        uint8 Reg = GMemRegTable1[ MemReg ];
+        Address = RegFile.GPRs[ Reg ];
 
-    instr.Wide = w;
+        Reg = GMemRegTable2[ MemReg ];
+        if ( Reg != UINT8_MAX )
+        {
+            Address += RegFile.GPRs[ Reg ];
+        }
+    }
+
+    if ( MovInstr.DisplDst != UINT16_MAX || MovInstr.DisplSrc != UINT16_MAX )
+    {
+        uint16 Displ = MovInstr.DisplDst != UINT16_MAX ? MovInstr.DisplDst : MovInstr.DisplSrc;
+        if ( Address != UINT16_MAX )
+        {
+            Address += Displ;
+        }
+        else
+        {
+            Address = Displ;
+        }
+    }
+
+    return Address;
+}
+
+void DecodeRegToRegMem( const uint8* InstrPtr, Instruction& Instr )
+{
+    uint8 d = InstrPtr[0] & 0b00000010;
+    uint8 w = InstrPtr[0] & 0b00000001;
+    uint8 mod = ( InstrPtr[1] & 0b11000000 ) >> 6;
+    uint8 reg = ( InstrPtr[1] & 0b00111000 ) >> 3;
+    uint8 r_m = ( InstrPtr[1] & 0b00000111 );
+
+    Instr.Wide = w;
 
     switch ( mod )
     {
     case 0b11:
         {
-            instr.RegDst = d ? reg : r_m;
-            instr.RegSrc = d ? r_m : reg;
+            Instr.RegDst = d ? reg : r_m;
+            Instr.RegSrc = d ? r_m : reg;
 
-            instr.ByteSize = 2;
+            Instr.ByteSize = 2;
             return;
         }
 
@@ -161,32 +202,32 @@ void decode_reg_r_m( const uint8* instr_ptr, Instruction& instr )
             {
                 if ( d )
                 {
-                    instr.RegDst = reg;
-                    instr.DisplSrc = *(uint16*)&instr_ptr[2];
+                    Instr.RegDst = reg;
+                    Instr.DisplSrc = *(uint16*)&InstrPtr[2];
                 }
                 else
                 {
-                    instr.RegSrc = reg;
-                    instr.DisplDst = *(uint16*)&instr_ptr[2];
+                    Instr.RegSrc = reg;
+                    Instr.DisplDst = *(uint16*)&InstrPtr[2];
                 }
 
-                instr.ByteSize = 4;
+                Instr.ByteSize = 4;
 
                 return;
             }
 
             if ( d )
             {
-                instr.RegDst = reg;
-                instr.MemRegSrc = r_m;
+                Instr.RegDst = reg;
+                Instr.MemRegSrc = r_m;
             }
             else
             {
-                instr.RegSrc = reg;
-                instr.MemRegDst = r_m;
+                Instr.RegSrc = reg;
+                Instr.MemRegDst = r_m;
             }
 
-            instr.ByteSize = 2;
+            Instr.ByteSize = 2;
             return;
         }
 
@@ -194,18 +235,18 @@ void decode_reg_r_m( const uint8* instr_ptr, Instruction& instr )
         {
             if ( d )
             {
-                instr.RegDst = reg;
-                instr.MemRegSrc = r_m;
-                instr.DisplSrc = instr_ptr[2];
+                Instr.RegDst = reg;
+                Instr.MemRegSrc = r_m;
+                Instr.DisplSrc = InstrPtr[2];
             }
             else
             {
-                instr.RegSrc = reg;
-                instr.MemRegDst = r_m;
-                instr.DisplDst = instr_ptr[2];
+                Instr.RegSrc = reg;
+                Instr.MemRegDst = r_m;
+                Instr.DisplDst = InstrPtr[2];
             }
 
-            instr.ByteSize = 3;
+            Instr.ByteSize = 3;
             return;
         }
 
@@ -213,18 +254,18 @@ void decode_reg_r_m( const uint8* instr_ptr, Instruction& instr )
         {
             if ( d )
             {
-                instr.RegDst = reg;
-                instr.MemRegSrc = r_m;
-                instr.DisplSrc = *(uint16*)&instr_ptr[2];
+                Instr.RegDst = reg;
+                Instr.MemRegSrc = r_m;
+                Instr.DisplSrc = *(uint16*)&InstrPtr[2];
             }
             else
             {
-                instr.RegSrc = reg;
-                instr.MemRegDst = r_m;
-                instr.DisplDst = *(uint16*)&instr_ptr[2];
+                Instr.RegSrc = reg;
+                Instr.MemRegDst = r_m;
+                Instr.DisplDst = *(uint16*)&InstrPtr[2];
             }
 
-            instr.ByteSize = 4;
+            Instr.ByteSize = 4;
             return;
         }
 
@@ -236,22 +277,19 @@ void decode_reg_r_m( const uint8* instr_ptr, Instruction& instr )
     }
 }
 
-void decode_imm_to_r_m( const uint8* instr_ptr, Instruction& instr )
+void DecodeImmToRegMem( const uint8* InstrPtr, Instruction& Instr, bool IsWide )
 {
-    uint8 s = instr_ptr[0] & 0b00000010;
-    uint8 mod = ( instr_ptr[1] & 0b11000000 ) >> 6;
-    uint8 r_m = ( instr_ptr[1] & 0b00000111 );
-
-    bool wide = instr.Wide && !s;
+    uint8 mod = ( InstrPtr[1] & 0b11000000 ) >> 6;
+    uint8 r_m = ( InstrPtr[1] & 0b00000111 );
 
     switch ( mod )
     {
     case 0b11:
         {
-            instr.RegDst = r_m;
-            instr.Immediate = wide ? *(uint16*)&instr_ptr[2] : instr_ptr[2];
+            Instr.RegDst = r_m;
+            Instr.Immediate = IsWide ? *(uint16*)&InstrPtr[2] : InstrPtr[2];
 
-            instr.ByteSize = wide ? 4 : 3;
+            Instr.ByteSize = IsWide ? 4 : 3;
             return;
         }
 
@@ -259,37 +297,37 @@ void decode_imm_to_r_m( const uint8* instr_ptr, Instruction& instr )
         {
             if ( r_m == 0b110 )
             {
-                instr.DisplDst = instr_ptr[2];
-                instr.Immediate = wide ? *(uint16*)&instr_ptr[4] : instr_ptr[4];
+                Instr.DisplDst = *(uint16*)&InstrPtr[2];
+                Instr.Immediate = IsWide ? *(uint16*)&InstrPtr[4] : InstrPtr[4];
 
-                instr.ByteSize = wide ? 6 : 5;
+                Instr.ByteSize = IsWide ? 6 : 5;
                 return;
             }
 
-            instr.MemRegDst = r_m;
-            instr.Immediate = wide ? *(uint16*)&instr_ptr[2] : instr_ptr[2];
+            Instr.MemRegDst = r_m;
+            Instr.Immediate = IsWide ? *(uint16*)&InstrPtr[2] : InstrPtr[2];
 
-            instr.ByteSize = wide ? 4 : 3;
+            Instr.ByteSize = IsWide ? 4 : 3;
             return;
         }
 
     case 0b01:
         {
-            instr.MemRegDst = r_m;
-            instr.DisplDst = instr_ptr[2];
-            instr.Immediate = wide ? *(uint16*)&instr_ptr[3] : instr_ptr[3];
+            Instr.MemRegDst = r_m;
+            Instr.DisplDst = InstrPtr[2];
+            Instr.Immediate = IsWide ? *(uint16*)&InstrPtr[3] : InstrPtr[3];
 
-            instr.ByteSize = wide ? 5 : 4;
+            Instr.ByteSize = IsWide ? 5 : 4;
             return;
         }
 
     case 0b10:
         {
-            instr.MemRegDst = r_m;
-            instr.DisplDst = *(uint16*)&instr_ptr[2];
-            instr.Immediate = wide ? *(uint16*)&instr_ptr[4] : instr_ptr[4];
+            Instr.MemRegDst = r_m;
+            Instr.DisplDst = *(uint16*)&InstrPtr[2];
+            Instr.Immediate = IsWide ? *(uint16*)&InstrPtr[4] : InstrPtr[4];
 
-            instr.ByteSize = wide ? 6 : 5;
+            Instr.ByteSize = IsWide ? 6 : 5;
             return;
         }
 
@@ -301,123 +339,123 @@ void decode_imm_to_r_m( const uint8* instr_ptr, Instruction& instr )
     }
 }
 
-void decode_jmp( const uint8* instr_ptr, Instruction& instr )
+void DecodeJump( const uint8* InstrPtr, Instruction& Instr )
 {
-    switch ( instr_ptr[0] )
+    switch ( InstrPtr[0] )
     {
     case 0b01110100:
-        instr.Name = IName::JE;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JE;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111100:
-        instr.Name = IName::JL;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JL;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111110:
-        instr.Name = IName::JLE;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JLE;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01110010:
-        instr.Name = IName::JB;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JB;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01110110:
-        instr.Name = IName::JBE;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JBE;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111010:
-        instr.Name = IName::JP;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JP;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01110000:
-        instr.Name = IName::JO;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JO;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111000:
-        instr.Name = IName::JS;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JS;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01110101:
-        instr.Name = IName::JNE;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNE;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111101:
-        instr.Name = IName::JNL;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNL;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111111:
-        instr.Name = IName::JNLE;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNLE;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01110011:
-        instr.Name = IName::JNB;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNB;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01110111:
-        instr.Name = IName::JNBE;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNBE;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111011:
-        instr.Name = IName::JNP;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNP;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01110001:
-        instr.Name = IName::JNO;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNO;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b01111001:
-        instr.Name = IName::JNS;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JNS;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b11100010:
-        instr.Name = IName::LOOP;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::LOOP;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b11100001:
-        instr.Name = IName::LOOPZ;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::LOOPZ;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b11100000:
-        instr.Name = IName::LOOPNZ;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::LOOPNZ;
+        Instr.Displacement = InstrPtr[1];
         break;
 
     case 0b11100011:
-        instr.Name = IName::JCXZ;
-        instr.Displacement = instr_ptr[1];
+        Instr.Name = IName::JCXZ;
+        Instr.Displacement = InstrPtr[1];
         break;
     }
 
-    instr.ByteSize = 2;
+    Instr.ByteSize = 2;
 }
 
-void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
+void ExecuteJump( const Instruction& Instr, RegisterFile& RegFile )
 {
-    switch ( instr.Name )
+    switch ( Instr.Name )
     {
     case IName::JE:
         {
-            if ( reg_file.ZF )
+            if ( RegFile.ZF )
             {
-                reg_file.IP += static_cast<int8>( instr.Displacement );
+                RegFile.IP += static_cast<int8>( Instr.Displacement );
             }
 
             return;
@@ -427,9 +465,9 @@ void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
     case IName::JS:
     case IName::JL:
         {
-            if ( reg_file.SF )
+            if ( RegFile.SF )
             {
-                reg_file.IP += static_cast<int8>( instr.Displacement );
+                RegFile.IP += static_cast<int8>( Instr.Displacement );
             }
 
             return;
@@ -438,9 +476,9 @@ void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
     case IName::JNB:
     case IName::JLE:
         {
-            if ( reg_file.SF || reg_file.ZF )
+            if ( RegFile.SF || RegFile.ZF )
             {
-                reg_file.IP += static_cast<int8>( instr.Displacement );
+                RegFile.IP += static_cast<int8>( Instr.Displacement );
             }
 
             return;
@@ -450,9 +488,9 @@ void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
     case IName::JNLE:
     case IName::JB:
         {
-            if ( !reg_file.SF )
+            if ( !RegFile.SF )
             {
-                reg_file.IP += static_cast<int8>( instr.Displacement );
+                RegFile.IP += static_cast<int8>( Instr.Displacement );
             }
 
             return;
@@ -461,9 +499,9 @@ void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
     case IName::JNL:
     case IName::JBE:
         {
-            if ( !reg_file.SF || reg_file.ZF )
+            if ( !RegFile.SF || RegFile.ZF )
             {
-                reg_file.IP += static_cast<int8>( instr.Displacement );
+                RegFile.IP += static_cast<int8>( Instr.Displacement );
             }
 
             return;
@@ -471,9 +509,9 @@ void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
 
     case IName::JNE:
         {
-            if ( !reg_file.ZF )
+            if ( !RegFile.ZF )
             {
-                reg_file.IP += static_cast<int8>( instr.Displacement );
+                RegFile.IP += static_cast<int8>( Instr.Displacement );
             }
 
             return;
@@ -481,9 +519,9 @@ void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
 
     default:
         {
-            if ( instr.Name >= IName::JE )
+            if ( Instr.Name >= IName::JE )
             {
-                printf( "JMP instruction not implemented!\n" );
+                printf( "ERROR: JMP instruction not implemented!\n" );
             }
 
             break;
@@ -491,207 +529,243 @@ void execute_jmp( const Instruction& instr, RegisterFile& reg_file )
     }
 }
 
-Instruction decode_instruction( const uint8* instr_ptr )
+Instruction DecodeInstruction( const uint8* InstrPtr )
 {
-    Instruction instr{};
-    switch ( instr_ptr[0] >> 2 )
+    Instruction Instr{};
+    switch ( InstrPtr[0] >> 2 )
     {
     case 0b100010:
         {
-            instr.Name = IName::MOV;
-            decode_reg_r_m( instr_ptr, instr );
-            return instr;
+            Instr.Name = IName::MOV;
+            DecodeRegToRegMem( InstrPtr, Instr );
+            return Instr;
         }
 
     case 0b000000:
         {
-            instr.Name = IName::ADD;
-            decode_reg_r_m( instr_ptr, instr );
-            return instr;
+            Instr.Name = IName::ADD;
+            DecodeRegToRegMem( InstrPtr, Instr );
+            return Instr;
         }
 
     case 0b001010:
         {
-            instr.Name = IName::SUB;
-            decode_reg_r_m( instr_ptr, instr );
-            return instr;
+            Instr.Name = IName::SUB;
+            DecodeRegToRegMem( InstrPtr, Instr );
+            return Instr;
         }
 
     case 0b001110:
         {
-            instr.Name = IName::CMP;
-            decode_reg_r_m( instr_ptr, instr );
-            return instr;
+            Instr.Name = IName::CMP;
+            DecodeRegToRegMem( InstrPtr, Instr );
+            return Instr;
         }
 
     case 0b000001:
         {
-            instr.Name = IName::ADD;
-            instr.Wide = instr_ptr[0] & 0b00000001;
+            Instr.Name = IName::ADD;
+            Instr.Wide = InstrPtr[0] & 0b00000001;
 
-            instr.RegDst = 0;
-            instr.Immediate = instr.Wide ? *(uint16*)&instr_ptr[1] : instr_ptr[1];
+            Instr.RegDst = 0;
+            Instr.Immediate = Instr.Wide ? *(uint16*)&InstrPtr[1] : InstrPtr[1];
 
-            instr.ByteSize = instr.Wide ? 3 : 2;
+            Instr.ByteSize = Instr.Wide ? 3 : 2;
 
-            return instr;
+            return Instr;
         }
 
     case 0b001011:
         {
-            instr.Name = IName::SUB;
-            instr.Wide = instr_ptr[0] & 0b00000001;
+            Instr.Name = IName::SUB;
+            Instr.Wide = InstrPtr[0] & 0b00000001;
 
-            instr.RegDst = 0;
-            instr.Immediate = instr.Wide ? *(uint16*)&instr_ptr[1] : instr_ptr[1];
+            Instr.RegDst = 0;
+            Instr.Immediate = Instr.Wide ? *(uint16*)&InstrPtr[1] : InstrPtr[1];
 
-            instr.ByteSize = instr.Wide ? 3 : 2;
+            Instr.ByteSize = Instr.Wide ? 3 : 2;
 
-            return instr;
+            return Instr;
         }
 
     case 0b001111:
         {
-            instr.Name = IName::CMP;
-            instr.Wide = instr_ptr[0] & 0b00000001;
+            Instr.Name = IName::CMP;
+            Instr.Wide = InstrPtr[0] & 0b00000001;
 
-            instr.RegDst = 0;
-            instr.Immediate = instr.Wide ? *(uint16*)&instr_ptr[1] : instr_ptr[1];
+            Instr.RegDst = 0;
+            Instr.Immediate = Instr.Wide ? *(uint16*)&InstrPtr[1] : InstrPtr[1];
 
-            instr.ByteSize = instr.Wide ? 3 : 2;
+            Instr.ByteSize = Instr.Wide ? 3 : 2;
 
-            return instr;
+            return Instr;
         }
 
     case 0b100000:
         {
-            instr.Wide = instr_ptr[0] & 0b00000001;
-            if ( 0 == ((instr_ptr[1] >> 3) & 0b00111) )
+            Instr.Wide = InstrPtr[0] & 0b00000001;
+            if ( 0 == ((InstrPtr[1] >> 3) & 0b00111) )
             {
-                instr.Name = IName::ADD;
-                decode_imm_to_r_m( instr_ptr, instr );
+                Instr.Name = IName::ADD;
+                DecodeImmToRegMem( InstrPtr, Instr, Instr.Wide && !(InstrPtr[0] & 0b00000010) );
             }
-            else if ( 0b101 == ((instr_ptr[1] >> 3) & 0b00111) )
+            else if ( 0b101 == ((InstrPtr[1] >> 3) & 0b00111) )
             {
-                instr.Name = IName::SUB;
-                decode_imm_to_r_m( instr_ptr, instr );
+                Instr.Name = IName::SUB;
+                DecodeImmToRegMem( InstrPtr, Instr, Instr.Wide && !(InstrPtr[0] & 0b00000010) );
             }
-            else if ( 0b111 == ((instr_ptr[1] >> 3) & 0b00111) )
+            else if ( 0b111 == ((InstrPtr[1] >> 3) & 0b00111) )
             {
-                instr.Name = IName::CMP;
-                decode_imm_to_r_m( instr_ptr, instr );
+                Instr.Name = IName::CMP;
+                DecodeImmToRegMem( InstrPtr, Instr, Instr.Wide && !(InstrPtr[0] & 0b00000010) );
             }
 
-            return instr;
+            return Instr;
         }
 
     default:
         break;
     }
 
-    if ( 0b1100011 == (instr_ptr[0] >> 1) )
+    if ( 0b1100011 == (InstrPtr[0] >> 1) )
     {
-        instr.Name = IName::MOV;
-        decode_imm_to_r_m( instr_ptr, instr );
-        return instr;
+        Instr.Name = IName::MOV;
+        Instr.Wide = InstrPtr[0] & 0b00000001;
+        DecodeImmToRegMem( InstrPtr, Instr, Instr.Wide );
+        return Instr;
     }
-    else if ( 0b1011 == (instr_ptr[0] >> 4) )
+    else if ( 0b1011 == (InstrPtr[0] >> 4) )
     {
-        uint8 reg = instr_ptr[0] & 0b00000111;
-        instr.Wide = instr_ptr[0] & 0b00001000;
+        uint8 Reg = InstrPtr[0] & 0b00000111;
+        Instr.Wide = InstrPtr[0] & 0b00001000;
 
-        instr.Name = IName::MOV;
-        instr.RegDst = reg;
-        instr.Immediate = instr.Wide ? *(uint16*)&instr_ptr[1] : instr_ptr[1];
+        Instr.Name = IName::MOV;
+        Instr.RegDst = Reg;
+        Instr.Immediate = Instr.Wide ? *(uint16*)&InstrPtr[1] : InstrPtr[1];
 
-        instr.ByteSize = instr.Wide ? 3 : 2;
-        return instr;
+        Instr.ByteSize = Instr.Wide ? 3 : 2;
+        return Instr;
     }
 
-    decode_jmp( instr_ptr, instr );
+    DecodeJump( InstrPtr, Instr );
 
-    return instr;
+    return Instr;
 }
 
-void print_instruction( const Instruction& instr )
+void PrintInstruction( const Instruction& Instr )
 {
-    printf( "%s", InstrNames[ (uint16)instr.Name ] );
+    printf( "%s", InstrNames[ (uint16)Instr.Name ] );
 
-    if ( instr.Name >= IName::JE )
+    if ( Instr.Name >= IName::JE )
     {
-        printf( " %d\n", static_cast<int8>( instr.Displacement ) );
+        printf( " %d\n", static_cast<int8>( Instr.Displacement ) );
         return;
     }
 
     // Print destination
-    if ( instr.RegDst != UINT16_MAX )
+    if ( Instr.RegDst != UINT8_MAX )
     {
-        printf( " %s", reg_name( instr.RegDst, instr.Wide ) );
+        printf( " %s", GetRegisterName( Instr.RegDst, Instr.Wide ) );
     }
-    else if ( instr.MemRegDst != UINT16_MAX && instr.DisplDst != UINT16_MAX )
+    else if ( Instr.MemRegDst != UINT8_MAX && Instr.DisplDst != UINT8_MAX )
     {
-        printf( " [%s + %d]", regMemTable[ instr.MemRegDst ], instr.DisplDst );
+        printf( " [%s + %d]", GRegMemTable[ Instr.MemRegDst ], Instr.DisplDst );
     }
-    else if ( instr.MemRegDst != UINT16_MAX )
+    else if ( Instr.MemRegDst != UINT8_MAX )
     {
-        printf( " [%s]", regMemTable[ instr.MemRegDst ] );
+        printf( " [%s]", GRegMemTable[ Instr.MemRegDst ] );
     }
-    else if ( instr.DisplDst != UINT16_MAX )
+    else if ( Instr.DisplDst != UINT16_MAX )
     {
-        printf( " [%d]", instr.DisplDst );
+        printf( " [%d]", Instr.DisplDst );
     }
 
     // Print source
-    if ( instr.RegSrc != UINT16_MAX )
+    if ( Instr.RegSrc != UINT8_MAX )
     {
-        printf( ", %s", reg_name( instr.RegSrc, instr.Wide ) );
+        printf( ", %s", GetRegisterName( Instr.RegSrc, Instr.Wide ) );
     }
-    else if ( instr.Immediate != UINT16_MAX )
+    else if ( Instr.Immediate != UINT16_MAX )
     {
-        printf( ", %d", instr.Immediate );
+        printf( ", %d", Instr.Immediate );
     }
-    else if ( instr.MemRegSrc != UINT16_MAX && instr.DisplSrc != UINT16_MAX )
+    else if ( Instr.MemRegSrc != UINT8_MAX && Instr.DisplSrc != UINT8_MAX )
     {
-        printf( ", [%s + %d]", regMemTable[ instr.MemRegSrc ], instr.DisplSrc );
+        printf( ", [%s + %d]", GRegMemTable[ Instr.MemRegSrc ], Instr.DisplSrc );
     }
-    else if ( instr.MemRegSrc != UINT16_MAX )
+    else if ( Instr.MemRegSrc != UINT8_MAX )
     {
-        printf( ", [%s]", regMemTable[ instr.MemRegSrc ] );
+        printf( ", [%s]", GRegMemTable[ Instr.MemRegSrc ] );
     }
-    else if ( instr.DisplSrc != UINT16_MAX )
+    else if ( Instr.DisplSrc != UINT16_MAX )
     {
-        printf( ", [%d]", instr.DisplSrc );
+        printf( ", [%d]", Instr.DisplSrc );
     }
 
     printf( "\n" );
 }
 
-void set_flags( uint16 result, RegisterFile& reg_file )
+void SetFlags( uint16 Result, RegisterFile& RegFile )
 {
-    reg_file.ZF = result == 0;
-    reg_file.SF = result & 0b1000'0000'0000'0000;
+    RegFile.ZF = Result == 0;
+    RegFile.SF = Result & 0b1000'0000'0000'0000;
 
-    printf( "ZF: %d\n", reg_file.ZF );
-    printf( "SF: %d\n", reg_file.SF );
+    printf( "ZF: %d\n", RegFile.ZF );
+    printf( "SF: %d\n", RegFile.SF );
 }
 
-void execute_instruction( const Instruction& instr, RegisterFile& reg_file )
+void ExecuteInstruction( const Instruction& Instr, Storage& Strg )
 {
-    switch ( instr.Name )
+    switch ( Instr.Name )
     {
     case IName::MOV:
         {
-            if ( instr.RegDst != UINT16_MAX && instr.RegSrc != UINT16_MAX )
+            if ( Instr.RegDst != UINT8_MAX && Instr.RegSrc != UINT8_MAX )
             {
-                uint16 prev = reg_file.GPRs[ instr.RegDst ];
-                reg_file.GPRs[ instr.RegDst ] = reg_file.GPRs[ instr.RegSrc ];
-                printf( "%s: 0x%04x => 0x%04x\n", regTableX[ instr.RegDst ], prev, reg_file.GPRs[ instr.RegDst ] );
+                uint16 Prev = Strg.RegFile.GPRs[ Instr.RegDst ];
+                Strg.RegFile.GPRs[ Instr.RegDst ] = Strg.RegFile.GPRs[ Instr.RegSrc ];
+                printf( "%s: 0x%04x => 0x%04x\n", GRegTableX[ Instr.RegDst ], Prev, Strg.RegFile.GPRs[ Instr.RegDst ] );
             }
-            else if ( instr.RegDst != UINT16_MAX && instr.Immediate != UINT16_MAX )
+            else if ( Instr.RegDst != UINT8_MAX && Instr.Immediate != UINT16_MAX )
             {
-                uint16 prev = reg_file.GPRs[ instr.RegDst ];
-                reg_file.GPRs[ instr.RegDst ] = instr.Immediate;
-                printf( "%s: 0x%04x => 0x%04x\n", regTableX[ instr.RegDst ], prev, reg_file.GPRs[ instr.RegDst ] );
+                uint16 Prev = Strg.RegFile.GPRs[ Instr.RegDst ];
+                Strg.RegFile.GPRs[ Instr.RegDst ] = Instr.Immediate;
+                printf( "%s: 0x%04x => 0x%04x\n", GRegTableX[ Instr.RegDst ], Prev, Strg.RegFile.GPRs[ Instr.RegDst ] );
+            }
+            else if ( ( Instr.MemRegDst != UINT8_MAX || Instr.DisplDst != UINT16_MAX ) && ( Instr.RegSrc != UINT8_MAX || Instr.Immediate != UINT16_MAX ) )
+            {
+                uint16 Address = CalculateMemoryAddress( Instr, Strg.RegFile );
+                if ( Address == UINT16_MAX )
+                {
+                    printf( "ERROR: Invalid memory address!\n" );
+                    break;
+                }
+
+                uint16 Value = Instr.RegSrc != UINT8_MAX ? Strg.RegFile.GPRs[ Instr.RegSrc ] : Instr.Immediate;
+                Strg.Memory[ Address ] = (uint8)( Value & 0x00ff );
+                printf( "Memory[%d] = %d\n", Address, Strg.Memory[ Address ] );
+
+                if ( Instr.Wide )
+                {
+                    Strg.Memory[ Address + 1 ] = (uint8)( Value >> 8 );
+                    printf( "Memory[%d] = %d\n", Address + 1, Strg.Memory[ Address + 1 ] );
+                }
+            }
+            else if ( Instr.RegDst != UINT8_MAX && ( Instr.MemRegSrc != UINT8_MAX || Instr.DisplSrc != UINT16_MAX ) )
+            {
+                uint16 Address = CalculateMemoryAddress( Instr, Strg.RegFile );
+                if ( Address == UINT16_MAX )
+                {
+                    printf( "ERROR: Invalid memory address!\n" );
+                    break;
+                }
+
+                uint16 ValueL = Strg.Memory[ Address ];
+                uint16 ValueH = Strg.Memory[ Address + 1 ];
+
+                Strg.RegFile.GPRs[ Instr.RegDst ] = ( ValueH << 8 ) | ( ValueL & 0x00ff );
+
+                printf( "%s = %d\n", GetRegisterName( Instr.RegDst, Instr.Wide ), Strg.RegFile.GPRs[ Instr.RegDst ] );
             }
 
             break;
@@ -699,22 +773,22 @@ void execute_instruction( const Instruction& instr, RegisterFile& reg_file )
 
     case IName::ADD:
         {
-            if ( instr.RegDst != UINT16_MAX && instr.RegSrc != UINT16_MAX )
+            if ( Instr.RegDst != UINT8_MAX && Instr.RegSrc != UINT8_MAX )
             {
-                uint16 prev = reg_file.GPRs[ instr.RegDst ];
-                reg_file.GPRs[ instr.RegDst ] += reg_file.GPRs[ instr.RegSrc ];
-                printf( "%s: 0x%04x => 0x%04x\n", regTableX[ instr.RegDst ], prev, reg_file.GPRs[ instr.RegDst ] );
+                uint16 Prev = Strg.RegFile.GPRs[ Instr.RegDst ];
+                Strg.RegFile.GPRs[ Instr.RegDst ] += Strg.RegFile.GPRs[ Instr.RegSrc ];
+                printf( "%s: 0x%04x => 0x%04x\n", GRegTableX[ Instr.RegDst ], Prev, Strg.RegFile.GPRs[ Instr.RegDst ] );
             }
-            else if ( instr.RegDst != UINT16_MAX && instr.Immediate != UINT16_MAX )
+            else if ( Instr.RegDst != UINT8_MAX && Instr.Immediate != UINT16_MAX )
             {
-                uint16 prev = reg_file.GPRs[ instr.RegDst ];
-                reg_file.GPRs[ instr.RegDst ] += instr.Immediate;
-                printf( "%s: 0x%04x => 0x%04x\n", regTableX[ instr.RegDst ], prev, reg_file.GPRs[ instr.RegDst ] );
+                uint16 Prev = Strg.RegFile.GPRs[ Instr.RegDst ];
+                Strg.RegFile.GPRs[ Instr.RegDst ] += Instr.Immediate;
+                printf( "%s: 0x%04x => 0x%04x\n", GRegTableX[ Instr.RegDst ], Prev, Strg.RegFile.GPRs[ Instr.RegDst ] );
             }
 
-            if ( instr.RegDst != UINT16_MAX )
+            if ( Instr.RegDst != UINT8_MAX )
             {
-                set_flags( reg_file.GPRs[ instr.RegDst ], reg_file );
+                SetFlags( Strg.RegFile.GPRs[ Instr.RegDst ], Strg.RegFile );
             }
 
             break;
@@ -722,22 +796,22 @@ void execute_instruction( const Instruction& instr, RegisterFile& reg_file )
 
     case IName::SUB:
         {
-            if ( instr.RegDst != UINT16_MAX && instr.RegSrc != UINT16_MAX )
+            if ( Instr.RegDst != UINT8_MAX && Instr.RegSrc != UINT8_MAX )
             {
-                uint16 prev = reg_file.GPRs[ instr.RegDst ];
-                reg_file.GPRs[ instr.RegDst ] -= reg_file.GPRs[ instr.RegSrc ];
-                printf( "%s: 0x%04x => 0x%04x\n", regTableX[ instr.RegDst ], prev, reg_file.GPRs[ instr.RegDst ] );
+                uint16 Prev = Strg.RegFile.GPRs[ Instr.RegDst ];
+                Strg.RegFile.GPRs[ Instr.RegDst ] -= Strg.RegFile.GPRs[ Instr.RegSrc ];
+                printf( "%s: 0x%04x => 0x%04x\n", GRegTableX[ Instr.RegDst ], Prev, Strg.RegFile.GPRs[ Instr.RegDst ] );
             }
-            else if ( instr.RegDst != UINT16_MAX && instr.Immediate != UINT16_MAX )
+            else if ( Instr.RegDst != UINT8_MAX && Instr.Immediate != UINT16_MAX )
             {
-                uint16 prev = reg_file.GPRs[ instr.RegDst ];
-                reg_file.GPRs[ instr.RegDst ] -= instr.Immediate;
-                printf( "%s: 0x%04x => 0x%04x\n", regTableX[ instr.RegDst ], prev, reg_file.GPRs[ instr.RegDst ] );
+                uint16 Prev = Strg.RegFile.GPRs[ Instr.RegDst ];
+                Strg.RegFile.GPRs[ Instr.RegDst ] -= Instr.Immediate;
+                printf( "%s: 0x%04x => 0x%04x\n", GRegTableX[ Instr.RegDst ], Prev, Strg.RegFile.GPRs[ Instr.RegDst ] );
             }
 
-            if ( instr.RegDst != UINT16_MAX )
+            if ( Instr.RegDst != UINT8_MAX )
             {
-                set_flags( reg_file.GPRs[ instr.RegDst ], reg_file );
+                SetFlags( Strg.RegFile.GPRs[ Instr.RegDst ], Strg.RegFile );
             }
 
             break;
@@ -745,15 +819,15 @@ void execute_instruction( const Instruction& instr, RegisterFile& reg_file )
 
     case IName::CMP:
         {
-            if ( instr.RegDst != UINT16_MAX && instr.RegSrc != UINT16_MAX )
+            if ( Instr.RegDst != UINT8_MAX && Instr.RegSrc != UINT8_MAX )
             {
-                uint16 res = reg_file.GPRs[ instr.RegDst ] - reg_file.GPRs[ instr.RegSrc ];
-                set_flags( res, reg_file );
+                uint16 Res = Strg.RegFile.GPRs[ Instr.RegDst ] - Strg.RegFile.GPRs[ Instr.RegSrc ];
+                SetFlags( Res, Strg.RegFile );
             }
-            else if ( instr.RegDst != UINT16_MAX && instr.Immediate != UINT16_MAX )
+            else if ( Instr.RegDst != UINT8_MAX && Instr.Immediate != UINT16_MAX )
             {
-                uint16 res = reg_file.GPRs[ instr.RegDst ] - instr.Immediate;
-                set_flags( res, reg_file );
+                uint16 Res = Strg.RegFile.GPRs[ Instr.RegDst ] - Instr.Immediate;
+                SetFlags( Res, Strg.RegFile );
             }
 
             break;
@@ -763,22 +837,24 @@ void execute_instruction( const Instruction& instr, RegisterFile& reg_file )
         break;
     }
 
-    reg_file.IP += instr.ByteSize;
+    Strg.RegFile.IP += Instr.ByteSize;
 
-    execute_jmp( instr, reg_file );
+    ExecuteJump( Instr, Strg.RegFile );
 }
 
-void simulate( const uint8* instr_stream, int size, RegisterFile& reg_file )
+void Simulate8086( Storage& Strg )
 {
+    const uint16 ProgramSize = *(uint16*)&Strg.Memory[0];
+
     for (;;)
     {
-        Instruction instr = decode_instruction( instr_stream + reg_file.IP );
-        print_instruction( instr );
-        execute_instruction( instr, reg_file );
+        Instruction Instr = DecodeInstruction( Strg.Memory + 2 + Strg.RegFile.IP );
+        PrintInstruction( Instr );
+        ExecuteInstruction( Instr, Strg );
 
         printf( "----------------\n" );
 
-        if ( reg_file.IP >= size )
+        if ( Strg.RegFile.IP >= ProgramSize )
         {
             break;
         }
@@ -792,31 +868,45 @@ int main( int argc, char** argv )
         return -1;
     }
 
-    const char* file_name = argv[1];
+    const char* FileName = argv[1];
 
-    FILE* input_file = fopen( file_name, "rb" );
-    fseek( input_file, 0L, SEEK_END );
-    int file_size = ftell(input_file);
-    fseek( input_file, 0L, SEEK_SET );
+    FILE* InputFile = fopen( FileName, "rb" );
+    fseek( InputFile, 0L, SEEK_END );
+    long FileSize = ftell( InputFile );
+    fseek( InputFile, 0L, SEEK_SET );
 
-    uint8* buf = (uint8*)malloc( file_size );
-    fread( buf, file_size, 1, input_file );
+    if ( FileSize >= UINT16_MAX )
+    {
+        printf( "ERROR: the program is too long!" );
+        return fclose( InputFile );
+    }
 
-    RegisterFile reg_file{};
-    simulate( buf, file_size, reg_file );
+    const uint16 ProgramSize = (uint16)FileSize;
 
-    free( buf );
+    Storage Strg{};
+
+    // Copy the program size into the first 2 bytes of memory
+    memcpy( &Strg.Memory[0], &ProgramSize, 2 );
+
+    // Copy the program itself into memory starting from byte 2
+    fread( &Strg.Memory[2], ProgramSize, 1, InputFile );
+    fclose( InputFile );
+
+    Simulate8086( Strg );
 
     printf( "\n\nFinal registers:\n" );
 
-    for ( int i = 0; i < sizeof(regTableX) / sizeof(regTableX[0]); i++ )
+    for ( int i = 0; i < sizeof(GRegTableX) / sizeof(GRegTableX[0]); i++ )
     {
-        printf( "%s: 0x%04x\n", regTableX[i], reg_file.GPRs[i] );
+        printf( "%s: 0x%04x\n", GRegTableX[i], Strg.RegFile.GPRs[i] );
     }
 
-    printf( "ZF: %d\n", reg_file.ZF );
-    printf( "SF: %d\n", reg_file.SF );
-    printf( "IP: %d\n", reg_file.IP );
+    printf( "ZF: %d\n", Strg.RegFile.ZF );
+    printf( "SF: %d\n", Strg.RegFile.SF );
+    printf( "IP: %d\n", Strg.RegFile.IP );
 
-    return fclose( input_file );
+    FILE* DumpFile = fopen( "mem_dump.bin", "wb" );
+    fwrite( Strg.Memory, sizeof( Strg.Memory ), 1, DumpFile );
+
+    return fclose( DumpFile );
 }
